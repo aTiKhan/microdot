@@ -121,7 +121,7 @@ namespace Gigya.Microdot.ServiceDiscovery.Rewrite
                         await DateTime.Delay(GetConfig().ErrorRetryInterval, _shutdownToken.Token).ConfigureAwait(false);
                 }
             }
-            catch (TaskCanceledException) when (_shutdownToken.IsCancellationRequested)
+            catch (Exception) when (_shutdownToken.IsCancellationRequested)
             {
                 // Ignore exception during shutdown.
             }
@@ -136,13 +136,7 @@ namespace Gigya.Microdot.ServiceDiscovery.Rewrite
             {
                 if (consulResponse.Error.InnerException is TaskCanceledException == false)
                 {
-                    Log.Error("Error calling Consul to get all services list", exception: consulResponse.Error, unencryptedTags: new
-                    {
-                        consulAddress = consulResponse.ConsulAddress,
-                        commandPath   = consulResponse.CommandPath,
-                        responseCode  = consulResponse.StatusCode,
-                        content       = consulResponse.ResponseContent
-                    });
+                    Log.Error("Error calling Consul to get all services list", exception: consulResponse.Error);
                 }
 
                 _healthStatus = HealthCheckResult.Unhealthy($"Error calling Consul: {consulResponse.Error.Message}");
@@ -171,7 +165,6 @@ namespace Gigya.Microdot.ServiceDiscovery.Rewrite
             _shutdownToken.Dispose();
             _serviceListHealthMonitor.Dispose();
         }
-        
     }
 
 }

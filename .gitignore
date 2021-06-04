@@ -256,3 +256,6 @@ OrleansAdoNetContent/
 .nuget/
 .nuget-packages/
 
+
+/.paket/
+launchSettings.json

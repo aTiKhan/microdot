@@ -60,6 +60,9 @@ namespace Gigya.Microdot.Hosting.Events
         [EventField(EventConsts.targetMethod)]
         public string ServiceMethod { get; set; }
 
+        [EventField(EventConsts.protocolSchema)]
+        public string ServiceMethodSchema { get; set; }
+
         /// <summary>  Sensitive Service method arguments </summary>
         [EventField("params", Encrypt = true)]
         public IEnumerable<KeyValuePair<string, object>> EncryptedServiceMethodArguments => LazyEncryptedRequestParams.GetValue(this);
@@ -75,12 +78,35 @@ namespace Gigya.Microdot.Hosting.Events
         [EventField("stats.client.response.time")]
         public virtual double? ClientResponseTimeIfNeeded => ClientResponseTime >= Configuration.MinResponseTimeForLog ? ClientResponseTime : null;
 
+        [EventField(EventConsts.SuppressCaching)]
+        public CacheSuppress? SuppressCaching { get; set; }  
 
         private readonly SharedLogic.Utils.Lazy<List<KeyValuePair<string, object>>, ServiceCallEvent> LazyEncryptedRequestParams = new SharedLogic.Utils.Lazy<List<KeyValuePair<string, object>>, ServiceCallEvent>(this_ => this_.GetRequestParams(Sensitivity.Sensitive).ToList());
         private readonly SharedLogic.Utils.Lazy<List<KeyValuePair<string, object>>, ServiceCallEvent> LazyUnencryptedRequestParams = new SharedLogic.Utils.Lazy<List<KeyValuePair<string, object>>, ServiceCallEvent>(this_ => this_.GetRequestParams(Sensitivity.NonSensitive).ToList());
 
 
         public IEnumerable<Param> Params { get; set; }
+
+        [EventField(EventConsts.RecvDateTicks)]
+        public long RecvDateTicks { get; set; }
+
+        [EventField(EventConsts.ReqStartupDeltaTicks)]
+        public long ReqStartupDeltaTicks { get; set; }
+
+        [EventField(EventConsts.TimeFromLastReq)]
+        public long TimeFromLastReq { get; set; }
+
+        [EventField(EventConsts.OutstandingRecvRequests)]
+        public long? OutstandingRecvRequests { get; set; }
+
+        [EventField(EventConsts.CollectionCountGen0)]
+        public int? CollectionCountGen0 { get; set; }
+
+        [EventField(EventConsts.CollectionCountGen1)]
+        public int? CollectionCountGen1 { get; set; }
+
+        [EventField(EventConsts.CollectionCountGen2)]
+        public int? CollectionCountGen2 { get; set; }
 
         private IEnumerable<KeyValuePair<string, object>> GetRequestParams(Sensitivity sensitivity)
         {

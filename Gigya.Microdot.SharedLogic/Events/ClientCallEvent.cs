@@ -62,6 +62,10 @@ namespace Gigya.Microdot.SharedLogic.Events
         [EventField(EventConsts.protocolParams)]
         public string ProtocolParams { get; set; }
 
+        [EventField(EventConsts.protocolSchema)]
+
+        public string ProtocolSchema { get; set; }
+
         /// <summary>Total time in milliseconds from sending the request till we got a response.</summary>
         [EventField(EventConsts.statsTotalTime, OmitFromAudit = true)]
         public double? TotalTimeMS => (ResponseEndTimestamp - RequestStartTimestamp) / (Stopwatch.Frequency / 1000.0);
@@ -73,6 +77,32 @@ namespace Gigya.Microdot.SharedLogic.Events
         /// <summary>Total time - ServerTimeMs</summary>
         [EventField(EventConsts.statsNetworkTime, OmitFromAudit = true)]
         public double? NetworkTimeMS => TotalTimeMS - ServerTimeMs;
+
+        [EventField(EventConsts.SuppressCaching)]
+        public CacheSuppress? SuppressCaching { get; set; }
+
+        // Debug srv&cln send recv stats
+        [EventField(EventConsts.statsRetryCount)]
+        public int? StatsRetryCount { get; set; }
+
+        [EventField(EventConsts.above10KmsgLength)]
+        public int? Above10KmsgLength { get; set; }
+
+        [EventField(EventConsts.isNewClientCreated)]
+        public bool IsNewClientCreated { get; set; }
+
+        [EventField(EventConsts.statsNetworkPostTime)]
+        public long StatsNetworkPostTime { get; set; }
+
+        [EventField(EventConsts.postDateTicks)]
+        public long PostDateTicks { get; set; }
+
+        [EventField(EventConsts.clientReadResponseTime)]
+        public long ClientReadResponseTime { get; set; }
+
+        [EventField(EventConsts.outstandingSentRequests)]
+        public long OutstandingSentRequests { get; set; }
+        // Debug srv&cln send recv stats
 
     }
 }

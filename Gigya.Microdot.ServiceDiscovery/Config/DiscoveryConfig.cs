@@ -26,6 +26,8 @@ using System.Collections.Immutable;
 using System.ComponentModel.DataAnnotations;
 using System.Runtime.Serialization;
 using Gigya.Microdot.Interfaces.Configuration;
+using Gigya.Microdot.SharedLogic.HttpService;
+using Newtonsoft.Json;
 
 namespace Gigya.Microdot.ServiceDiscovery.Config
 {
@@ -35,7 +37,7 @@ namespace Gigya.Microdot.ServiceDiscovery.Config
     [Serializable]
     [ConfigurationRoot("Discovery", RootStrategy.ReplaceClassNameWithPath)]
     public class DiscoveryConfig : IConfigObject
-    {        
+    {
         internal ServiceDiscoveryConfig DefaultItem { get; private set; }
 
         /// <summary>
@@ -75,6 +77,43 @@ namespace Gigya.Microdot.ServiceDiscovery.Config
         public double DelayMultiplier { get; set; } = 2;
 
         /// <summary>
+        /// Indicate wheather clients should use secure channel to communicate with target service
+        /// </summary>
+        public bool UseHttpsOverride { get; set; } = false;
+
+        /// <summary>
+        /// Indicates whether the service should listen for HTTPs traffic
+        /// </summary>
+        public bool ServiceHttpsOverride { get; set; } = false;
+
+        /// <summary>
+        /// Indicates whether the client should try and elevate to HTTPs traffic even if not explicitly configured to 
+        /// </summary>
+        public bool TryHttps { get; set; }
+
+        /// <summary>
+        /// The frequency in which the service proxy will try to send an HTTPS request in minutes
+        /// </summary>
+        public int TryHttpsIntervalInMinutes { get; set; } = 1;
+
+        /// <summary>
+        /// Indicates whether the proxy provider send connections metrics to metrics.net and flume
+        /// </summary>
+        public bool PublishConnectionsMetrics { get; set; } = true;
+
+        /// <summary>
+        /// Controls the client verification logic for the server certificate.
+        /// Default behavior is to validate that the server domain matches the certificate domain.
+        /// </summary>
+        public ServerCertificateVerificationMode ServerCertificateVerification { get; set; } = ServerCertificateVerificationMode.VerifyDomain;
+
+        /// <summary>
+        /// Controls the verification logic of the client certificate.
+        /// Default behavior is that no verification is been made.
+        /// </summary>
+        public ClientCertificateVerificationMode ClientCertificateVerification { get; set; } = ClientCertificateVerificationMode.Disable;
+
+        /// <summary>
         /// The discovery mode to use, e.g. whether to use DNS resolving, Consul, etc.
         /// </summary>
         public string Source { get; set; } = ConsulDiscoverySource.Name;
@@ -89,8 +128,8 @@ namespace Gigya.Microdot.ServiceDiscovery.Config
 
         public bool EnvironmentFallbackEnabled { get; set; } = false;
 
-        public string EnvironmentFallbackTarget { get; set; } 
-        
+        public string EnvironmentFallbackTarget { get; set; }
+
         [OnDeserialized]
         private void OnDeserialized(StreamingContext context)
         {
@@ -104,8 +143,8 @@ namespace Gigya.Microdot.ServiceDiscovery.Config
                 Source = Source
             };
 
-            var services = (IDictionary<string, ServiceDiscoveryConfig>)Services?? new Dictionary<string, ServiceDiscoveryConfig>();
-            
+            var services = (IDictionary<string, ServiceDiscoveryConfig>)Services ?? new Dictionary<string, ServiceDiscoveryConfig>();
+
             Services = new ServiceDiscoveryCollection(services, DefaultItem, PortAllocation);
         }
     }

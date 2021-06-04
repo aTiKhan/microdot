@@ -1,4 +1,5 @@
-﻿using Gigya.Microdot.Interfaces.Configuration;
+﻿using System;
+using Gigya.Microdot.Interfaces.Configuration;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
@@ -20,6 +21,10 @@ namespace Gigya.Microdot.Orleans.Hosting
         public DashboardConfig Dashboard { get; set; } = new DashboardConfig(); // We need initialization, else will be null, and no default will be available
         public double DefaultGrainAgeLimitInMins { get; set; } = 30;
         public IDictionary<string, GrainAgeLimitConfig> GrainAgeLimits { get; set; } = new ConcurrentDictionary<string, GrainAgeLimitConfig>();
+
+        public bool EnableTls { get; set; } = false;
+
+        public string OverrideHostNameToUseDuringTlsHandshake { get; set; }
 
         public ZooKeeperConfig ZooKeeper { get; set; }
 
@@ -51,6 +56,8 @@ namespace Gigya.Microdot.Orleans.Hosting
         /// </example>
         [JsonConverter(typeof(StringEnumConverter))]
         public LogLevel DefaultCategoryLogLevel  { get; set; } = LogLevel.Information;
+        
+        public TimeSpan? MessageResponseTime { get; set; }
     }
 
     public class ZooKeeperConfig
@@ -61,6 +68,7 @@ namespace Gigya.Microdot.Orleans.Hosting
     public class MySqlConfig
     {
         public string ConnectionString { get; set; }
+        public string Invariant { get; set; }
     }
 
     public class OrleansLogLevel

@@ -38,6 +38,9 @@ namespace Gigya.Microdot.Configuration
         private string DecryptedValue { get; set; }
         public string Key { get; set; }
         public uint Priority { get; set; }
+        public ArrayType isArray { get; set; }
+
+        public Exception ParsingException { get; set; }
 
         public  ConfigItem(ConfigDecryptor configDecryptor)
         {
@@ -112,5 +115,12 @@ namespace Gigya.Microdot.Configuration
                });
         }
 
+    }
+
+    public enum ArrayType
+    {
+        None,
+        List,
+        Collection
     }
 }

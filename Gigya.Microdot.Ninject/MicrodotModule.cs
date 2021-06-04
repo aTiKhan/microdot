@@ -24,6 +24,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using Gigya.Common.Contracts.HttpService;
 using Gigya.Microdot.Configuration;
 using Gigya.Microdot.Configuration.Objects;
@@ -31,12 +32,17 @@ using Gigya.Microdot.Hosting.HttpService;
 using Gigya.Microdot.Interfaces;
 using Gigya.Microdot.Interfaces.Configuration;
 using Gigya.Microdot.Interfaces.Logging;
+using Gigya.Microdot.Orleans.Hosting;
 using Gigya.Microdot.ServiceDiscovery;
+using Gigya.Microdot.ServiceDiscovery.AvailabilityZoneServiceDiscovery;
 using Gigya.Microdot.ServiceDiscovery.HostManagement;
 using Gigya.Microdot.ServiceDiscovery.Rewrite;
 using Gigya.Microdot.ServiceProxy;
+using Gigya.Microdot.ServiceProxy.Caching;
+using Gigya.Microdot.ServiceProxy.Caching.RevokeNotifier;
 using Gigya.Microdot.SharedLogic;
 using Gigya.Microdot.SharedLogic.Events;
+using Gigya.Microdot.SharedLogic.HttpService;
 using Gigya.Microdot.SharedLogic.Monitor;
 using Metrics;
 using Ninject;
@@ -60,7 +66,9 @@ namespace Gigya.Microdot.Ninject
             typeof(ConsulDiscoverySource),
             typeof(RemoteHostPool),
             typeof(LoadBalancer),
-            typeof(ConfigDiscoverySource)
+            typeof(ConfigDiscoverySource),
+            typeof(HttpServiceListener),
+            typeof(GigyaSiloHost)
         };
 
         public override void Load()
@@ -71,12 +79,18 @@ namespace Gigya.Microdot.Ninject
             if (Kernel.CanResolve<Func<long, DateTime>>() == false)
                 Kernel.Load<FuncModule>();
 
-            this.BindClassesAsSingleton(NonSingletonBaseTypes, typeof(ConfigurationAssembly), typeof(ServiceProxyAssembly));
-            this.BindInterfacesAsSingleton(NonSingletonBaseTypes,new List<Type>{typeof(ILog)}, 
-                                                                typeof(ConfigurationAssembly), 
-                                                                typeof(ServiceProxyAssembly), 
-                                                                typeof(SharedLogicAssembly), 
-                                                                typeof(ServiceDiscoveryAssembly));
+            this.BindClassesAsSingleton(
+                NonSingletonBaseTypes,
+                typeof(ConfigurationAssembly),
+                typeof(ServiceProxyAssembly));
+            
+            this.BindInterfacesAsSingleton(
+                NonSingletonBaseTypes,
+                new List<Type>{typeof(ILog)}, 
+                typeof(ConfigurationAssembly), 
+                typeof(ServiceProxyAssembly), 
+                typeof(SharedLogicAssembly), 
+                typeof(ServiceDiscoveryAssembly));
 
 
             Bind<IRemoteHostPoolFactory>().ToFactory();
@@ -85,7 +99,18 @@ namespace Gigya.Microdot.Ninject
 
             Kernel.BindPerKey<string, ReachabilityCheck, IMultiEnvironmentServiceDiscovery, MultiEnvironmentServiceDiscovery>();
             Kernel.BindPerKey<string, ReachabilityChecker, IServiceDiscovery, ServiceDiscovery.ServiceDiscovery>();
+            Kernel.Bind<Func<HttpClientConfiguration, HttpMessageHandler>>().ToMethod(c => HttpClientConfiguration =>
+            {
+                var clientHandler = new HttpClientHandler();
+                if (HttpClientConfiguration.UseHttps)
+                {
+                    var httpAuthenticator = c.Kernel.Get<IHttpsAuthenticator>();
+                    httpAuthenticator.AddHttpMessageHandlerAuthentication(clientHandler, HttpClientConfiguration);
+                }
+                return clientHandler;
+            });
             Kernel.BindPerString<IServiceProxyProvider, ServiceProxyProvider>();
+            Kernel.Rebind<IRecentRevokesCache>().To<RecentRevokesCache>().InSingletonScope();
             Kernel.BindPerString<AggregatingHealthStatus>();
 
             Rebind<MetricsContext>()
@@ -118,6 +143,11 @@ namespace Gigya.Microdot.Ninject
                 .ToMethod(c =>new ServiceSchema(c.Kernel.Get<IServiceInterfaceMapper>().ServiceInterfaceTypes.ToArray())).InSingletonScope();
 
             Kernel.Rebind<SystemInitializer.SystemInitializer>().ToSelf().InSingletonScope();
+            Kernel.Rebind<IAvailabilityZoneServiceDiscovery>().To<AvailabilityZoneServiceDiscovery>().InTransientScope();
+
+            Kernel.Rebind<IRevokeContextConcurrentCollection>().To<RevokeContextConcurrentCollection>().InTransientScope();
+            Kernel.Bind<IRevokeContextConcurrentCollectionFactory>().ToFactory();
+            Kernel.Bind<IRevokeKeyIndexerFactory>().ToFactory();
         }
 
 

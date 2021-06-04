@@ -24,6 +24,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Runtime.Serialization;
+using Gigya.Common.Contracts.Attributes;
 
 namespace Gigya.Microdot.ServiceDiscovery.Config
 {
@@ -33,8 +34,6 @@ namespace Gigya.Microdot.ServiceDiscovery.Config
     [Serializable]
     public class CachingPolicyConfig: MethodCachingPolicyConfig
     {
-        internal MethodCachingPolicyConfig DefaultItem { get; private set; }
-
         /// <summary>
         /// The discovery configuration for the various services.
         /// </summary>
@@ -43,27 +42,26 @@ namespace Gigya.Microdot.ServiceDiscovery.Config
         [OnDeserialized]
         private void OnDeserialized(StreamingContext context)
         {
-            DefaultItem = new MethodCachingPolicyConfig
-            {
-                Enabled = Enabled ?? Default.Enabled,
-                ExpirationTime = ExpirationTime ?? Default.ExpirationTime,
-                FailedRefreshDelay = FailedRefreshDelay ?? Default.FailedRefreshDelay,
-                RefreshTime = RefreshTime ?? Default.RefreshTime
-            };
-        
-            var methods = (IDictionary<string, MethodCachingPolicyConfig>)Methods ?? new Dictionary<string, MethodCachingPolicyConfig>();
-
-            Methods = new CachingPolicyCollection(methods, DefaultItem);
+            
         }
 
-        public static MethodCachingPolicyConfig Default =>
-                new MethodCachingPolicyConfig
-                {
-                    Enabled = true,
-                    RefreshTime = TimeSpan.FromMinutes(1),
-                    ExpirationTime = TimeSpan.FromHours(6),
-                    FailedRefreshDelay = TimeSpan.FromSeconds(1)
-                };
+        public static readonly MethodCachingPolicyConfig Default = new MethodCachingPolicyConfig
+        {
+            // Note! RefreshMode & ExpirationBehavior defaults, depends on whether it is a 'Revocable' method
+            // So their defaults will be set in later phase of configuration resolution
+
+            Enabled                                       = true,
+            RefreshTime                                   = TimeSpan.FromMinutes(1),
+            ExpirationTime                                = TimeSpan.FromHours(6),
+            FailedRefreshDelay                            = TimeSpan.FromSeconds(1),
+            ResponseKindsToCache                          = ResponseKinds.NonNullResponse | ResponseKinds.NullResponse,
+            ResponseKindsToIgnore                         = ResponseKinds.EnvironmentException | ResponseKinds.OtherExceptions | ResponseKinds.RequestException | ResponseKinds.TimeoutException,
+            RequestGroupingBehavior                       = RequestGroupingBehavior.Enabled,
+            RefreshBehavior                               = RefreshBehavior.UseOldAndFetchNewValueInBackground,
+            RevokedResponseBehavior                       = RevokedResponseBehavior.TryFetchNewValueNextTimeOrUseOld, // Behavior change
+            CacheResponsesWhenSupressedBehavior           = CacheResponsesWhenSupressedBehavior.Enabled,
+            NotIgnoredResponseBehavior                    = NotIgnoredResponseBehavior.KeepCachedResponse
+        };
 
     }
 }

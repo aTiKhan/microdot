@@ -32,9 +32,13 @@ using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using System.Security.Authentication;
+using Gigya.Microdot.SharedLogic.HttpService;
 using Orleans.Providers;
 using Orleans;
-
+using Orleans.Connections.Security;
+using Gigya.Microdot.Interfaces.Configuration;
+using Microsoft.AspNetCore.Connections;
 
 namespace Gigya.Microdot.Orleans.Hosting
 {
@@ -49,12 +53,16 @@ namespace Gigya.Microdot.Orleans.Hosting
         private readonly ServiceArguments _serviceArguments;
         private readonly CurrentApplicationInfo _appInfo;
         private readonly ISiloHostBuilder _siloHostBuilder;
+        private readonly ICertificateLocator _certificateLocator;
+        private IOrleansConfigurationBuilderConfigurator _orleansConfigurationBuilderConfigurator;
 
         public OrleansConfigurationBuilder(OrleansConfig orleansConfig, OrleansCodeConfig commonConfig,
             OrleansServiceInterfaceMapper orleansServiceInterfaceMapper,
             ClusterIdentity clusterIdentity, IServiceEndPointDefinition endPointDefinition,
             ServiceArguments serviceArguments,
-            CurrentApplicationInfo appInfo)
+            CurrentApplicationInfo appInfo,
+            ICertificateLocator certificateLocator,
+            IOrleansConfigurationBuilderConfigurator orleansConfigurationBuilderConfigurator)
         {
             _orleansConfig = orleansConfig;
             _commonConfig = commonConfig;
@@ -63,6 +71,8 @@ namespace Gigya.Microdot.Orleans.Hosting
             _endPointDefinition = endPointDefinition;
             _serviceArguments = serviceArguments;
             _appInfo = appInfo;
+            _certificateLocator = certificateLocator;
+            _orleansConfigurationBuilderConfigurator = orleansConfigurationBuilderConfigurator;
             _siloHostBuilder = InitBuilder();
         }
 
@@ -102,6 +112,8 @@ namespace Gigya.Microdot.Orleans.Hosting
         {
             var hostBuilder = new SiloHostBuilder();
 
+            _orleansConfigurationBuilderConfigurator.PreInitializationConfiguration(hostBuilder);
+
             hostBuilder.Configure<SerializationProviderOptions>(options =>
                 {
                     options.SerializationProviders.Add(typeof(OrleansCustomSerialization));
@@ -109,7 +121,7 @@ namespace Gigya.Microdot.Orleans.Hosting
                     // A workaround for an Orleans issue
                     // to ensure the stack trace properly de/serialized
                     // Gigya.Microdot.UnitTests.Serialization.ExceptionSerializationTests
-                    options.SerializationProviders.Add(typeof(HttpRequestExceptionSerializer));
+                    options.SerializationProviders.Add(typeof(NonSerializedExceptionsSerializer));
 
                     options.FallbackSerializationProvider = typeof(OrleansCustomSerialization);
                 })
@@ -120,12 +132,14 @@ namespace Gigya.Microdot.Orleans.Hosting
 
             if (_orleansConfig.Dashboard.Enable)
             {
-                hostBuilder.UseDashboard(o =>
-                    {
-                        o.Port = _endPointDefinition.SiloDashboardPort;
-                        o.CounterUpdateIntervalMs = (int)TimeSpan.Parse(_orleansConfig.Dashboard.WriteInterval).TotalMilliseconds;
-                        o.HideTrace = _orleansConfig.Dashboard.HideTrace;
-                    });
+
+                    hostBuilder.UseDashboard(o =>
+                        {
+                            o.Port = _endPointDefinition.SiloDashboardPort;
+                            o.CounterUpdateIntervalMs = (int)TimeSpan.Parse(_orleansConfig.Dashboard.WriteInterval).TotalMilliseconds;
+                            o.HideTrace = _orleansConfig.Dashboard.HideTrace;
+                        });
+                
             }
 
             SetGrainCollectionOptions(hostBuilder);
@@ -143,11 +157,34 @@ namespace Gigya.Microdot.Orleans.Hosting
                 options.MaxActiveThreads = Process.GetCurrentProcess().ProcessorAffinityList().Count();
             });
 
-            hostBuilder.Configure<ClusterMembershipOptions>(options =>
+            hostBuilder.Configure<ClientMessagingOptions>(options =>
             {
-                // Minimizes artificial startup delay to a maximum of 0.5 seconds (instead of 10 seconds)
-                options.ExpectedClusterSize = 1;
+                if (_orleansConfig.MessageResponseTime.HasValue)
+                    options.ResponseTimeout = _orleansConfig.MessageResponseTime.Value;
             });
+            
+            hostBuilder.Configure<SiloMessagingOptions>(options =>
+            {
+                if (_orleansConfig.MessageResponseTime.HasValue)
+                    options.ResponseTimeout = _orleansConfig.MessageResponseTime.Value;
+            });
+
+
+            if (_orleansConfig.EnableTls)
+            {
+                var localCertificate = _certificateLocator.GetCertificate("Service");
+                hostBuilder.UseTls(localCertificate, tlsOptions =>
+                {
+                   tlsOptions.LocalCertificate = localCertificate;
+                    tlsOptions.ClientCertificateMode = RemoteCertificateMode.AllowCertificate;
+                    tlsOptions.RemoteCertificateMode = RemoteCertificateMode.AllowCertificate;
+                    
+                    tlsOptions.SslProtocols = SslProtocols.Tls12;
+
+                    tlsOptions.OnAuthenticateAsClient = OnAuthenticateAsClient;
+                });
+
+            }
 
             SetReminder(hostBuilder);
             SetSiloSource(hostBuilder);
@@ -158,13 +195,24 @@ namespace Gigya.Microdot.Orleans.Hosting
                 o.PerfCountersWriteInterval = TimeSpan.Parse(_orleansConfig.MetricsTableWriteInterval);
             });
 
+            _orleansConfigurationBuilderConfigurator.PostInitializationConfiguration(hostBuilder);
             return hostBuilder;
+        }
+
+        private void OnAuthenticateAsClient(ConnectionContext context, TlsClientAuthenticationOptions options)
+        {
+            //See us/#115757
+            options.TargetHost = _orleansConfig.OverrideHostNameToUseDuringTlsHandshake??options.TargetHost;
         }
 
         private void SetReminder(ISiloHostBuilder silo)
         {
             if (_commonConfig.RemindersSource == OrleansCodeConfig.Reminders.Sql)
-                silo.UseAdoNetReminderService(options => options.ConnectionString = _orleansConfig.MySql_v4_0.ConnectionString);
+                silo.UseAdoNetReminderService(options =>
+                    {
+                        options.ConnectionString = _orleansConfig.MySql_v4_0.ConnectionString;
+                        options.Invariant = _orleansConfig.MySql_v4_0.Invariant;
+                    });
             if (_commonConfig.RemindersSource == OrleansCodeConfig.Reminders.InMemory)
                 silo.UseInMemoryReminderService();
         }
@@ -191,10 +239,8 @@ namespace Gigya.Microdot.Orleans.Hosting
                     break;
 
                 case SiloClusterMode.SecondaryNode:
-                    if(_endPointDefinition.SiloNetworkingPortOfPrimaryNode == null)
-                        throw new ArgumentException($"missing {nameof(_endPointDefinition.SiloNetworkingPortOfPrimaryNode)}");
-
-                    silo.UseLocalhostClustering(_endPointDefinition.SiloNetworkingPort, _endPointDefinition.SiloNetworkingPortOfPrimaryNode.Value);
+                    silo.UseLocalhostClustering(_endPointDefinition.SiloNetworkingPort, _endPointDefinition.SiloGatewayPort,
+                        new IPEndPoint(IPAddress.Loopback, _endPointDefinition.BasePortOfPrimarySilo.Value + (int)PortOffsets.SiloNetworking));
 
                     break;
             }

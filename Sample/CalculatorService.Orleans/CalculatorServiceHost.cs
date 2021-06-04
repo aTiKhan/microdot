@@ -2,6 +2,8 @@
 using Gigya.Microdot.Logging.NLog;
 using Gigya.Microdot.Ninject;
 using Gigya.Microdot.Orleans.Ninject.Host;
+using System.Threading.Tasks;
+using Orleans;
 
 namespace CalculatorService.Orleans
 {
@@ -12,13 +14,6 @@ namespace CalculatorService.Orleans
 
         static void Main(string[] args)
         {
-            Environment.SetEnvironmentVariable("GIGYA_CONFIG_ROOT", Environment.CurrentDirectory);
-            Environment.SetEnvironmentVariable("GIGYA_CONFIG_PATHS_FILE", "");
-            Environment.SetEnvironmentVariable("GIGYA_ENVVARS_FILE", Environment.CurrentDirectory);
-            Environment.SetEnvironmentVariable("REGION", "us1");
-            Environment.SetEnvironmentVariable("ZONE", "us1a");
-            Environment.SetEnvironmentVariable("ENV", "dev");
-
             try
             {
                 new CalculatorServiceHost().Run();
@@ -30,5 +25,22 @@ namespace CalculatorService.Orleans
         }
 
         public override ILoggingModule GetLoggingModule() => new NLogModule();
+
+        protected override async Task AfterOrleansStartup(IGrainFactory grainFactory)
+        {
+            //StartGeneratingPerSiloGrainMessages(grainFactory);
+        }
+
+        public override Type PerSiloGrainType => typeof(MyPerSiloGrain);
+        async void StartGeneratingPerSiloGrainMessages(IGrainFactory grainFactory)
+        {
+            int count = 0;
+            while (true) {
+                var grain = grainFactory.GetGrain<IMyNormalGrain<int>>(0);
+                try { await grain.Publish(count++); }
+                catch {}
+                await Task.Delay(2000);
+            }
+        }
     }
 }
