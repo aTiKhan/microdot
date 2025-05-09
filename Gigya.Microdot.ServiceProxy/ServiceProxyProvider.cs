@@ -34,16 +34,17 @@ using System.Threading.Tasks.Dataflow;
 using Gigya.Common.Application.HttpService.Client;
 using Gigya.Common.Contracts.Exceptions;
 using Gigya.Common.Contracts.HttpService;
-using Gigya.Microdot.Interfaces.Configuration;
 using Gigya.Microdot.Interfaces.Events;
 using Gigya.Microdot.Interfaces.Logging;
 using Gigya.Microdot.ServiceDiscovery.Config;
 using Gigya.Microdot.ServiceDiscovery.Rewrite;
 using Gigya.Microdot.SharedLogic;
+using Gigya.Microdot.SharedLogic.Configurations;
 using Gigya.Microdot.SharedLogic.Events;
 using Gigya.Microdot.SharedLogic.Exceptions;
 using Gigya.Microdot.SharedLogic.HttpService;
 using Gigya.Microdot.SharedLogic.Rewrite;
+using Gigya.Microdot.SharedLogic.Security;
 using Gigya.Microdot.SharedLogic.Utils;
 using Metrics;
 using Newtonsoft.Json;
@@ -131,8 +132,6 @@ namespace Gigya.Microdot.ServiceProxy
 
         private CurrentApplicationInfo AppInfo { get; }
 
-        private static long _outstandingSentRequests;
-
         private ObjectPool<Stopwatch> _stopwatchPool = new ObjectPool<Stopwatch>(() => new Stopwatch(), 4096);
 
         public ServiceProxyProvider(string serviceName, IEventPublisher<ClientCallEvent> eventPublisher,
@@ -141,8 +140,11 @@ namespace Gigya.Microdot.ServiceProxy
             Func<DiscoveryConfig> getConfig,
             JsonExceptionSerializer exceptionSerializer, 
             CurrentApplicationInfo appInfo,
-            Func<HttpClientConfiguration, HttpMessageHandler> messageHandlerFactory)
+            Func<HttpClientConfiguration, HttpMessageHandler> messageHandlerFactory,
+            IMicrodotTypePolicySerializationBinder serializationBinder)
         {
+            JsonSettings.SerializationBinder = serializationBinder;
+
             EventPublisher = eventPublisher;
 
             Log = log;
@@ -182,7 +184,7 @@ namespace Gigya.Microdot.ServiceProxy
             Timeout = timeout;
         }
 
-        private (HttpClient httpClient, bool isHttps, bool isNewCreated) GetHttpClient(ServiceDiscoveryConfig serviceConfig, DiscoveryConfig defaultConfig, bool tryHttps, string hostname, int basePort)
+        private (HttpClient httpClient, bool isHttps) GetHttpClient(ServiceDiscoveryConfig serviceConfig, DiscoveryConfig defaultConfig, bool tryHttps, string hostname, int basePort)
         {
             var forceHttps = serviceConfig.UseHttpsOverride ?? (ServiceInterfaceRequiresHttps || defaultConfig.UseHttpsOverride);
             var useHttps = tryHttps || forceHttps;
@@ -196,7 +198,7 @@ namespace Gigya.Microdot.ServiceProxy
             lock (HttpClientLock)
             {
                 if (LastHttpClient != null && LastHttpClientKey.Equals(httpKey))
-                    return ( httpClient: LastHttpClient, isHttps: useHttps, isNewCreated: false);
+                    return ( httpClient: LastHttpClient, isHttps: useHttps);
 
                 // In case we're trying HTTPs and the previous request on this instance was HTTP (or if this is the first request)
                 if (Not(forceHttps) && httpKey.UseHttps && Not(LastHttpClientKey?.UseHttps ?? false))
@@ -220,14 +222,6 @@ namespace Gigya.Microdot.ServiceProxy
                 var isNewCreated = false;
                 if (!(LastHttpClientKey?.Equals(httpKey) ?? false))
                 {
-                    isNewCreated = true;
-                    var equalState = (LastHttpClientKey?.Equals(httpKey))?.ToString() ?? "FirstTime";
-                    Log.Info(msg => msg("GetHttpClient created new HttpClient", unencryptedTags: new Tags
-                    {
-                        {"debug.delay.newHttpClient", equalState},
-                        {"debug.delay.method", "GetHttpClient"}
-                    })); // we expect this not to be equal ever
-
                     var messageHandler = _httpMessageHandlerFactory(httpKey);
                     var httpClient = CreateHttpClient(messageHandler, httpKey.Timeout);
 
@@ -236,7 +230,7 @@ namespace Gigya.Microdot.ServiceProxy
                     _httpMessageHandler = messageHandler;
                 }
 
-                return (httpClient: LastHttpClient, isHttps: httpKey.UseHttps, isNewCreated: isNewCreated);
+                return (httpClient: LastHttpClient, isHttps: httpKey.UseHttps);
             }
         }
 
@@ -267,19 +261,12 @@ namespace Gigya.Microdot.ServiceProxy
                 {
                     messageHandler = _httpMessageHandlerFactory(clientConfiguration);
                     httpsClient = CreateHttpClient(messageHandler, configuration.Timeout);
-                    return (httpsClient, isHttps: true, isNewCreated: true); // the return value is ignored as this async task is not awaited
+                    return (httpsClient, isHttps: true); // the return value is ignored as this async task is not awaited
                 }, cancellationToken: CancellationToken.None);
 
                 lock (HttpClientLock)
                 {
-                    var isEqual = LastHttpClient?.Equals(httpsClient).ToString() ?? "Null";
-                    Log.Info(msg => msg("GetHttpClient created new HttpClient", unencryptedTags: new Tags
-                    {
-                        {"debug.delay.newHttpClient", isEqual},
-                        {"debug.delay.method", "Reachability"}
-                    })); // we expect this not to be equal ever
-
-                    LastHttpClient = httpsClient;
+                   LastHttpClient = httpsClient;
                     LastHttpClientKey = new HttpClientConfiguration(
                         useHttps: true, 
                         configuration.SecurityRole, 
@@ -303,18 +290,18 @@ namespace Gigya.Microdot.ServiceProxy
             if (port == null)
                 throw new Exception("No port is configured");
 
-            Func<bool, (HttpClient client, bool isHttps, bool isNewCreated)> clientFactory = tryHttps  => GetHttpClient(config, GetDiscoveryConfig(), tryHttps, node.Hostname, port.Value);
+            Func<bool, (HttpClient client, bool isHttps)> clientFactory = tryHttps  => GetHttpClient(config, GetDiscoveryConfig(), tryHttps, node.Hostname, port.Value);
             return ValidateReachability(node.Hostname, port.Value, fallbackOnProtocolError: true, clientFactory: clientFactory, cancellationToken: cancellationToken);
         }
 
         private async Task ValidateReachability(string hostname,
             int port,
             bool fallbackOnProtocolError,
-            Func<bool, (HttpClient httpClient, bool isHttps, bool isNewCreated)> clientFactory,
+            Func<bool, (HttpClient httpClient, bool isHttps)> clientFactory,
             CancellationToken cancellationToken)
         {
             HttpResponseMessage response;
-            (HttpClient httpClient, bool isHttps, bool isNewCreated)? clientInfo = null;
+            (HttpClient httpClient, bool isHttps)? clientInfo = null;
             try
             {
                 clientInfo = clientFactory(true);
@@ -452,16 +439,13 @@ namespace Gigya.Microdot.ServiceProxy
 
                     httpContent.Headers.Add(GigyaHttpHeaders.ProtocolVersion, HttpServiceRequest.ProtocolVersion);
 
-                    var asyncActionStopwatch = _stopwatchPool.Get();
-                    var outstandingSentReqs = Interlocked.Increment(ref _outstandingSentRequests);
                     clientCallEvent.RequestStartTimestamp = Stopwatch.GetTimestamp();
                     try
                     {
                         bool isNewCreated;
-                        (httpClient, isHttps, isNewCreated) = GetHttpClient(config, discoveryConfig, tryHttps,
+                        (httpClient, isHttps) = GetHttpClient(config, discoveryConfig, tryHttps,
                             nodeAndLoadBalancer.Node.Hostname, effectivePort.Value);
 
-                        clientCallEvent.IsNewClientCreated = isNewCreated;
                         clientCallEvent.ProtocolSchema = isHttps ? "HTTPS" : "HTTP";
 
                         // The URL is only for a nice experience in Fiddler, it's never parsed/used for anything.
@@ -485,23 +469,8 @@ namespace Gigya.Microdot.ServiceProxy
                         clientCallEvent.TargetEnvironment = nodeAndLoadBalancer.TargetEnvironment;
                         clientCallEvent.TargetPort = actualPort;
 
-                        clientCallEvent.OutstandingSentRequests = outstandingSentReqs;
-
-
-                        var now = DateTime.UtcNow.Ticks;
-
-                        asyncActionStopwatch.Restart();
                         response = await httpClient.PostAsync(uri, httpContent).ConfigureAwait(false);
-                        asyncActionStopwatch.Stop();
-
-                        clientCallEvent.StatsNetworkPostTime = asyncActionStopwatch.ElapsedMilliseconds;
-                        clientCallEvent.PostDateTicks = now;
-
-                        asyncActionStopwatch.Restart();
                         responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                        asyncActionStopwatch.Stop();
-
-                        clientCallEvent.ClientReadResponseTime = asyncActionStopwatch.ElapsedMilliseconds;
                     }
                     catch (Exception ex)
                     {
@@ -512,9 +481,6 @@ namespace Gigya.Microdot.ServiceProxy
                     }
                     finally
                     {
-                        Interlocked.Decrement(ref _outstandingSentRequests);
-                        _stopwatchPool.Return(asyncActionStopwatch);
-
                         clientCallEvent.ResponseEndTimestamp = Stopwatch.GetTimestamp();
                         
                         PublishServiceConnectionMetrics(uri);
@@ -530,10 +496,15 @@ namespace Gigya.Microdot.ServiceProxy
                 }
                 catch (HttpRequestException ex)
                 {
+
                     //In case we get any https request exception and we were trying HTTPs we must fallback to HTTP
                     //otherwise we will be stuck trying HTTPs because we didn't change the Http client and will probably 
                     //get different error than Tls errors
-                    if (allowNonHttps && isHttps)
+                    if (   allowNonHttps 
+                        && isHttps 
+                        && ex.Message != null 
+                        && (discoveryConfig.CertificateErrorMessageSubstrings??Enumerable.Empty<string>()).Any(ex.Message.Contains)
+                        )
                     {
                         tryHttps = false;
                         continue;
@@ -654,12 +625,6 @@ namespace Gigya.Microdot.ServiceProxy
                 }
                 else
                 {
-                    if (allowNonHttps && isHttps)
-                    {
-						tryHttps = false;
-						continue;
-					}
-
                     var exception = response.StatusCode == HttpStatusCode.ServiceUnavailable ?
                         new Exception($"The remote service is unavailable (503) and is not recognized as a Gigya host at uri: {uri}") :
                         new Exception($"The remote service returned a response but is not recognized as a Gigya host at uri: {uri}");
